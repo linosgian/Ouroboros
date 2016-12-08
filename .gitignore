@@ -1,0 +1,9 @@
+# Ignore Everything
+*
+
+# Except these files
+!.gitignore
+!crypto32.h
+!dllmain.cpp
+!lookups.h
+!docfile.vba
