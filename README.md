@@ -1,7 +1,7 @@
 # Ouroboros
 
 Ouroboros is a malware built for educational purposes only. At the time of writing, it goes undetected under Windows Defender.
-Tested under Windows XP,7,8.1 and 10.
+Tested on Windows XP,7,8.1 and 10.
 
 ## Infect Method
   1. Send the VB Macro in a form of a .doc file
@@ -16,7 +16,7 @@ Tested under Windows XP,7,8.1 and 10.
 - Not following the golden rule *DO NOT ROLL YOUR OWN CRYPTO*, i used a non-standard sha256 implementation because of:
   * Annoying dependencies and size of OpenSSL library.
   * Extremely verbose code of Win32API's Crypto library.
-  * I only needed SHA256 for hashing one single usage. To produce a mutex in order to avoid multiple instance of the malware running at the same time
+  * I only needed SHA256 for hashing one single string. To produce a mutex in order to avoid multiple instance of the malware running at the same time
 In any case what i've done is NOT recommended.
 
 ## Main Ideas
@@ -37,7 +37,7 @@ The malware does not do anything new nor does it exploit a new/unknown vulnerabi
   3. Reverse Shell:
     + Straightforward redirection of stdout/stdin/stderr streams to a socket, in order to connect to the C&C Server.
   4. Mutual Exclusion:
-    1. Gather information about the infected machine ( GPU-CPU info, Computer Name, Screen Resolution, Number of Processors.
+    1. Gather information about the infected machine (GPU-CPU info, Computer Name, Screen Resolution, Number of Processors).
     2. Salt used to avoid the usage of rainbow tables.
     3. Concat all the information and put them through the sha256 function. This way we make sure we don't go over the MAX_PATH limit on Mutexes
   5. General Algorithm:
