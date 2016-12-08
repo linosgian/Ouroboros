@@ -38,6 +38,7 @@ unordered_map<int, char*> VK_LUT_lcase = {
 	{ 0xBD			, "-"		},
 	{ 0xBE			, "."		}
 };
+
 unordered_map<int, char*> VK_LUT_ucase = {
 	{ VK_OEM_2	, "?" },
 	{ VK_OEM_3	, "~" },
