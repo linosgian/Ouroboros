@@ -1,8 +1,5 @@
 #ifndef LOOKUP_TABLES_H
 #define LOOKUP_TABLES_H
-#include <unordered_map>
-
-using namespace std;
 
 unordered_map<int, char*> VK_LUT_lcase = {
 	{ VK_TAB		, "[TAB]"	},
